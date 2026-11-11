@@ -1,0 +1,10 @@
+[application]
+name = "musik-ui"
+
+[web.app]
+title = "Musik Faktory"
+
+# `dx serve` in this folder forwards API calls to a running server
+# (start it with: cargo run -p musik-faktory -- serve --mock)
+[[web.proxy]]
+backend = "http://127.0.0.1:8787/api/"

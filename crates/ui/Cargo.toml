@@ -1,0 +1,22 @@
+[package]
+name = "musik-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Musik Faktory user interface (Dioxus, runs in the browser / as an installed PWA)"
+
+[dependencies]
+musik-shared = { path = "../shared" }
+dioxus = { version = "=0.7.9", features = ["router"] }
+serde.workspace = true
+serde_json.workspace = true
+gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "Element", "HtmlMediaElement"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]
