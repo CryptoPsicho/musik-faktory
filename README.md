@@ -136,9 +136,8 @@ just run the binary:
 musik-faktory serve --bind 0.0.0.0 --port 8787
 ```
 
-On the Chromebook open `http://<that-machine>:8787` (an IP address, the machine’s own host name or `<name>.local` work;
-add other names with `--allowed-host musicbox.example,*.ts.net`. Unknown host names are refused to block DNS-rebinding
-tricks from web pages) and use *⋮ → Cast, save and share → Create shortcut → Open as window*.
+On the Chromebook open `http://<that-machine>:8787` (an IP address, the machine’s own host name, `<name>.local` and its
+Tailscale MagicDNS names work; see [Allowing other host names](#allowing-other-host-names) for others) and use *⋮ → Cast, save and share → Create shortcut → Open as window*.
 For a real installable app and access outside home, put it behind HTTPS (e.g. `tailscale serve 8787`).
 The key never leaves the server. The kid pages have no login, so anyone on your home network can use the
 studio, always within the limits. Only parents can change the limits.
@@ -190,10 +189,31 @@ Then open `http://<server-ip>:8787` (from the Chromebook too), go to **🔒 Pare
 and the API key. Useful details:
 
 * Logs: `journalctl -u musik-faktory-server -f`. Data (back it up): `/var/lib/musik-faktory/`.
-* Reaching it by a DNS name other than the server's own host name? Add `--allowed-host that.name` to `ExecStart`.
+* Host names: the server answers to IP addresses, `localhost`, its own host name (`name`, `name.local`) and, when
+  Tailscale is installed, its own **MagicDNS names** (`name.your-tailnet.ts.net` and `name`, detected automatically,
+  also when Tailscale connects after the server started). Any other name is refused, which protects against DNS
+  rebinding; see [Allowing other host names](#allowing-other-host-names).
 * Keep it on your home network (or behind Tailscale/HTTPS). The kid pages have no login, so don't expose port 8787 to
   the internet: anyone could spend the budget (always within the limits).
 * Update: install the newer `.deb`, then `sudo systemctl restart musik-faktory-server`.
+
+---
+
+### Allowing other host names
+
+Only allow names you set up yourself for this server. Headscale or other custom MagicDNS domains (anything that isn't
+`*.ts.net`) are never trusted automatically, so add those here too. Pass the names (comma-separated, `*.example.com`
+wildcards allowed) with `--allowed-host` and/or the `MUSIK_ALLOWED_HOSTS` variable; both are combined.
+`--allowed-host` belongs to `serve`, so it goes after it:
+
+| Started as | How |
+|---|---|
+| a command | `musik-faktory --port 8080 serve --bind 0.0.0.0 --allowed-host music.example.com` |
+| the system service above | `sudo systemctl edit musik-faktory-server`, add `[Service]` + `Environment=MUSIK_ALLOWED_HOSTS=music.example.com`, restart |
+| the per-user service (from the `.deb`) | `systemctl --user edit musik-faktory`, same two lines, `systemctl --user restart musik-faktory` |
+
+Not sure how it's running? `ps -o args= -C musik-faktory` shows the command line. At startup the log lists every
+accepted name (`answering to: …`) and what Tailscale reported (`Tailscale: …`); refused names are logged too.
 
 ---
 

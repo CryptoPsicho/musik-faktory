@@ -32,6 +32,9 @@ pub struct AppState {
     pub recording: std::sync::atomic::AtomicBool,
     /// Host names (besides IP literals and localhost) the server answers to.
     pub allowed_hosts: Vec<String>,
+    /// This machine's own Tailscale MagicDNS names (`*.ts.net` only), kept
+    /// up to date by a background task (see [`spawn_tailscale_refresher`]).
+    pub tailscale_hosts: Mutex<Vec<String>>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -118,7 +121,8 @@ type R<T> = Result<Json<T>, AppErr>;
 /// Is this Host header one we serve? IP literals, localhost names, ChromeOS
 /// Linux names and configured host names are fine. Anything else is refused,
 /// which defeats DNS-rebinding attacks from web pages the child visits.
-pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
+/// The host name of a Host header: lowercase, without port or trailing dot.
+pub fn host_name(host: &str) -> String {
     let h = host.trim().to_ascii_lowercase();
     // Strip the port ("[::1]:8787", "1.2.3.4:8787", "name:8787").
     let name = if let Some(rest) = h.strip_prefix('[') {
@@ -129,7 +133,12 @@ pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
             _ => h.clone(),
         }
     };
-    let name = name.trim_end_matches('.');
+    name.trim_end_matches('.').to_string()
+}
+
+pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
+    let name = host_name(host);
+    let name = name.as_str();
     if name.parse::<std::net::IpAddr>().is_ok() {
         return true;
     }
@@ -142,15 +151,137 @@ pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
         })
 }
 
+/// What asking the local Tailscale produced.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Tailscale {
+    /// This machine's MagicDNS names: the full `name.tailnet.ts.net` and `name`.
+    Names(Vec<String>),
+    NotInstalled,
+    NotRunning(String),
+    /// A MagicDNS domain not controlled by Tailscale (e.g. Headscale): it is
+    /// never trusted automatically, as anyone could own it.
+    OtherDomain(String),
+    Failed(String),
+}
+
+impl Tailscale {
+    pub fn describe(&self) -> String {
+        match self {
+            Tailscale::Names(n) => format!("answering to its MagicDNS names {}", n.join(", ")),
+            Tailscale::NotInstalled => "not installed (no `tailscale` command)".into(),
+            Tailscale::NotRunning(why) => format!("not connected ({why}); will check again"),
+            Tailscale::OtherDomain(d) => {
+                format!("MagicDNS name {d:?} is not a *.ts.net name; add it with --allowed-host if you want to use it")
+            }
+            Tailscale::Failed(why) => format!("could not ask Tailscale ({why}); will check again"),
+        }
+    }
+}
+
+/// Read this machine's names from `tailscale status --json`.
+pub fn parse_tailscale_status(v: &serde_json::Value) -> Tailscale {
+    let state = v["BackendState"].as_str().unwrap_or("");
+    if state != "Running" {
+        return Tailscale::NotRunning(if state.is_empty() { "no state".into() } else { state.to_string() });
+    }
+    let full = v["Self"]["DNSName"].as_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
+    if full.is_empty() || !full.contains('.') {
+        return Tailscale::NotRunning("no MagicDNS name".into());
+    }
+    if !full.ends_with(".ts.net") {
+        return Tailscale::OtherDomain(full);
+    }
+    let short = full.split('.').next().unwrap_or("").to_string();
+    Tailscale::Names(vec![full, short])
+}
+
+/// Ask the local Tailscale for this machine's names (`tailscale` on PATH, or
+/// the snap's /snap/bin/tailscale, which system services don't have on PATH).
+pub async fn detect_tailscale() -> Tailscale {
+    let mut last_err = Tailscale::NotInstalled;
+    for bin in ["tailscale", "/snap/bin/tailscale"] {
+        let run = tokio::process::Command::new(bin)
+            .args(["status", "--json", "--peers=false"])
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        return match tokio::time::timeout(std::time::Duration::from_secs(5), run).await {
+            Err(_) => Tailscale::Failed("`tailscale status` took longer than 5 s".into()),
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                last_err = Tailscale::NotInstalled;
+                continue;
+            }
+            Ok(Err(e)) => Tailscale::Failed(format!("{bin}: {e}")),
+            Ok(Ok(out)) if !out.status.success() => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                Tailscale::Failed(err.lines().next().unwrap_or("non-zero exit").trim().to_string())
+            }
+            Ok(Ok(out)) => match serde_json::from_slice(&out.stdout) {
+                Ok(v) => parse_tailscale_status(&v),
+                Err(e) => Tailscale::Failed(format!("unexpected output: {e}")),
+            },
+        };
+    }
+    last_err
+}
+
+/// Keep the MagicDNS names current in the background: Tailscale may connect
+/// after the server started, or the machine may be renamed. Requests never
+/// wait for this, and a failed check keeps the names already known.
+pub fn spawn_tailscale_refresher(s: Shared, first: Tailscale) {
+    tokio::spawn(async move {
+        let mut last = first;
+        loop {
+            let pause = match &last {
+                Tailscale::Names(_) => 120,
+                Tailscale::NotInstalled => 600,
+                _ => 10,
+            };
+            tokio::time::sleep(std::time::Duration::from_secs(pause)).await;
+            let now = detect_tailscale().await;
+            if let Tailscale::Names(n) = &now {
+                *s.tailscale_hosts.lock().unwrap() = n.clone();
+            }
+            if now != last {
+                tracing::info!("Tailscale: {}", now.describe());
+            }
+            last = now;
+        }
+    });
+}
+
+fn tailscale_allowed(s: &AppState, host: &str) -> bool {
+    let name = host_name(host);
+    s.tailscale_hosts.lock().unwrap().contains(&name)
+}
+
+/// A plain DNS name (letters, digits, hyphens, dots), safe to show in a hint.
+fn is_dns_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|l| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+}
+
 pub async fn host_guard(State(s): State<Shared>, req: Request, next: axum::middleware::Next) -> Response {
     let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).map(|h| h.to_string());
-    match host {
-        Some(h) if !host_allowed(&h, &s.allowed_hosts) => {
-            tracing::warn!("refused request for unknown host {h:?} (add it with --allowed-host)");
-            AppErr::new(StatusCode::MISDIRECTED_REQUEST, "Unknown host name. Start the server with --allowed-host <name> to allow it.").into_response()
-        }
-        _ => next.run(req).await,
+    let Some(h) = host else { return next.run(req).await };
+    if host_allowed(&h, &s.allowed_hosts) || tailscale_allowed(&s, &h) {
+        return next.run(req).await;
     }
+    let name = host_name(&h);
+    tracing::warn!(
+        "refused a request for the unknown host name {name:?}. If that is a name you set up for this server, \
+         add it to --allowed-host / MUSIK_ALLOWED_HOSTS (comma-separated)."
+    );
+    let msg = if is_dns_name(&name) {
+        format!(
+            "This server doesn't answer to the name \"{name}\". If you set up this name for it yourself, allow it with \
+             --allowed-host (see “Allowing other host names” in the README). Never allow a name you don't recognize."
+        )
+    } else {
+        "This server doesn't answer to this host name.".to_string()
+    };
+    AppErr::new(StatusCode::MISDIRECTED_REQUEST, msg).code("unknown_host").into_response()
 }
 
 // ---------------------------------------------------------------- router
@@ -209,6 +340,7 @@ mod tests {
             login_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             recording: Default::default(),
             allowed_hosts: vec![],
+            tailscale_hosts: Default::default(),
         })
     }
 
@@ -312,6 +444,55 @@ mod tests {
         assert!(measured_cost(40, 60_000, &st).is_none());
         assert!(measured_cost(0, 60_000, &st).is_none());
         assert!(measured_cost(9_000, 60_000, &st).is_none());
+    }
+
+    #[test]
+    fn host_names_are_normalized() {
+        assert_eq!(host_name("MusicBox.Tail1234.TS.NET.:8080"), "musicbox.tail1234.ts.net");
+        assert_eq!(host_name("[::1]:8787"), "::1");
+        assert_eq!(host_name("example.com"), "example.com");
+    }
+
+    #[test]
+    fn tailscale_status_is_trusted_only_for_ts_net() {
+        let v = |state: &str, dns: &str| serde_json::json!({"BackendState": state, "Self": {"DNSName": dns}});
+        assert_eq!(
+            parse_tailscale_status(&v("Running", "MusicBox.tail1234.ts.net.")),
+            Tailscale::Names(vec!["musicbox.tail1234.ts.net".into(), "musicbox".into()])
+        );
+        // Headscale / custom domains could be owned by anyone: never automatic.
+        assert_eq!(parse_tailscale_status(&v("Running", "musicbox.family.net.")), Tailscale::OtherDomain("musicbox.family.net".into()));
+        assert!(matches!(parse_tailscale_status(&v("NeedsLogin", "musicbox.tail1234.ts.net.")), Tailscale::NotRunning(_)));
+        assert!(matches!(parse_tailscale_status(&v("Running", "")), Tailscale::NotRunning(_)));
+        assert!(matches!(parse_tailscale_status(&serde_json::json!({})), Tailscale::NotRunning(_)));
+    }
+
+    #[test]
+    fn hints_only_show_plain_dns_names() {
+        assert!(is_dns_name("music.example.com"));
+        assert!(!is_dns_name("x --allowed-host *.evil.com"));
+        assert!(!is_dns_name(""));
+        assert!(!is_dns_name("a..b"));
+    }
+
+    #[tokio::test]
+    async fn unknown_host_error_names_the_host() {
+        let s = test_state();
+        *s.tailscale_hosts.lock().unwrap() = vec!["musicbox.tail1234.ts.net".into(), "musicbox".into()];
+        assert!(tailscale_allowed(&s, "MusicBox.tail1234.ts.net:8080"));
+        assert!(!tailscale_allowed(&s, "other.tail1234.ts.net"));
+        let app = Router::new()
+            .route("/x", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(s.clone(), host_guard));
+        let req = |host: &str| axum::http::Request::builder().uri("/x").header(header::HOST, host).body(Body::empty()).unwrap();
+        let ok = app.clone().oneshot(req("musicbox.tail1234.ts.net:8080")).await.unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        // Not a ts.net name: refused at once, with the exact name to allow.
+        let bad = app.oneshot(req("evil.example.com:8080")).await.unwrap();
+        assert_eq!(bad.status(), StatusCode::MISDIRECTED_REQUEST);
+        let body = axum::body::to_bytes(bad.into_body(), 10_000).await.unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("\\\"evil.example.com\\\"") && body.contains("Never allow a name you don't recognize"), "{body}");
     }
 
     #[test]
