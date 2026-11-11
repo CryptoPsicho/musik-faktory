@@ -59,7 +59,9 @@ Defaults: $0.15/min (ElevenLabs API list price), ~900 credits/min, weekly limit 
 
 ## Build
 
-Requirements: Rust (stable) and the Dioxus CLI **0.7.9** (the build script adds the needed Rust targets itself).
+Requirements: Rust (stable) and the Dioxus CLI **0.7.x** (0.7.9 recommended, *not* the 0.8 alphas). The build script
+checks the `dx` version and adds the needed Rust targets itself; `DX=/path/to/dx scripts/build.sh` picks a specific `dx`.
+Only want to run it on a server? You don't need to build: see [Deploy on a Linux server](#deploy-on-a-linux-server-no-build-needed).
 
 ```bash
 cargo install dioxus-cli --version 0.7.9 --locked
@@ -140,6 +142,58 @@ tricks from web pages) and use *⋮ → Cast, save and share → Create shortcut
 For a real installable app and access outside home, put it behind HTTPS (e.g. `tailscale serve 8787`).
 The key never leaves the server. The kid pages have no login, so anyone on your home network can use the
 studio, always within the limits. Only parents can change the limits.
+
+---
+
+## Deploy on a Linux server (no build needed)
+
+The release `.deb` contains one statically linked program that runs on any x86_64 Linux (Debian, Ubuntu, …):
+
+```bash
+curl -LO https://github.com/CryptoPsicho/musik-faktory/releases/download/v0.1.0/musik-faktory_0.1.0_amd64.deb
+```
+
+```bash
+sudo apt install ./musik-faktory_0.1.0_amd64.deb
+```
+
+The package starts a personal studio on `127.0.0.1` for desktop logins (that's what the Chromebook uses). On a
+server, switch that off and run one system service reachable from your network instead:
+
+```bash
+sudo systemctl --global disable musik-faktory.service
+```
+
+```bash
+sudo tee /etc/systemd/system/musik-faktory-server.service >/dev/null <<'EOF'
+[Unit]
+Description=Musik Faktory server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=musik-faktory
+ExecStart=/usr/bin/musik-faktory --data-dir /var/lib/musik-faktory serve --bind 0.0.0.0 --port 8787
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now musik-faktory-server
+```
+
+Then open `http://<server-ip>:8787` (from the Chromebook too), go to **🔒 Parents** and set the password, the limits
+and the API key. Useful details:
+
+* Logs: `journalctl -u musik-faktory-server -f`. Data (back it up): `/var/lib/musik-faktory/`.
+* Reaching it by a DNS name other than the server's own host name? Add `--allowed-host that.name` to `ExecStart`.
+* Keep it on your home network (or behind Tailscale/HTTPS). The kid pages have no login, so don't expose port 8787 to
+  the internet: anyone could spend the budget (always within the limits).
+* Update: install the newer `.deb`, then `sudo systemctl restart musik-faktory-server`.
 
 ---
 
