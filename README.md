@@ -75,7 +75,7 @@ Results in `dist/`:
 
 | File | What it is |
 |---|---|
-| `musik-faktory_0.1.0_amd64.deb` | **the installer** for the Chromebook (or any Debian/Ubuntu) |
+| `musik-faktory_0.1.1_amd64.deb` | **the installer** for the Chromebook (or any Debian/Ubuntu) |
 | `musik-faktory` | the program itself: one self-contained, statically linked file (~9 MB, UI included) |
 | `install-linux.sh` | alternative installer that needs no admin rights |
 
@@ -94,7 +94,7 @@ then open <http://localhost:8787>.
 
 Most Chromebooks are x86_64; many cheaper ones are ARM (`uname -m` in the Linux terminal says `aarch64`). Cross-build
 with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (the UI is WebAssembly and works everywhere).
-This produces `musik-faktory_0.1.0_arm64.deb`:
+This produces `musik-faktory_0.1.1_arm64.deb`:
 
 ```bash
 cargo install cargo-zigbuild && pip install ziglang
@@ -112,7 +112,7 @@ scripts/build.sh aarch64-unknown-linux-musl
 
 1. Turn on Linux: *Settings → About ChromeOS → Developers → Linux development environment*.
    (On a Family Link account, a parent may need to allow it.)
-2. Copy `musik-faktory_0.1.0_amd64.deb` into **Linux files** with the Files app, then **double-click it**
+2. Copy `musik-faktory_0.1.1_amd64.deb` into **Linux files** with the Files app, then **double-click it**
    (or right-click → *Install with Linux*) and confirm.
 3. **Musik Faktory** appears in the launcher (in the *Linux apps* folder; drag it to the shelf if you like).
    Clicking it starts the studio server and opens the app in Chrome. Optionally use Chrome’s *Install app*
@@ -149,11 +149,11 @@ studio, always within the limits. Only parents can change the limits.
 The release `.deb` contains one statically linked program that runs on any x86_64 Linux (Debian, Ubuntu, …):
 
 ```bash
-curl -LO https://github.com/CryptoPsicho/musik-faktory/releases/download/v0.1.0/musik-faktory_0.1.0_amd64.deb
+curl -LO https://github.com/CryptoPsicho/musik-faktory/releases/download/v0.1.1/musik-faktory_0.1.1_amd64.deb
 ```
 
 ```bash
-sudo apt install ./musik-faktory_0.1.0_amd64.deb
+sudo apt install ./musik-faktory_0.1.1_amd64.deb
 ```
 
 The package starts a personal studio on `127.0.0.1` for desktop logins (that's what the Chromebook uses). On a
