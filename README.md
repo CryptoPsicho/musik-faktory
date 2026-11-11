@@ -238,3 +238,9 @@ cd crates/ui && dx serve --platform web
 
 Rule of thumb: **wherever the API key lives, the spending limits must be enforced there too.**
 Here that’s the server, plus ElevenLabs’ own per-key credit quota as a backstop.
+
+---
+
+## License
+
+[MIT](LICENSE). Eleven Music output is subject to the [ElevenLabs music terms](https://elevenlabs.io/music-terms).

@@ -30,6 +30,7 @@ install -Dm644 crates/server/static/icon-512.png "$STAGE/usr/share/icons/hicolor
 install -Dm644 crates/server/static/icon-192.png "$STAGE/usr/share/icons/hicolor/192x192/apps/musik-faktory.png"
 install -Dm644 crates/server/static/icon.svg "$STAGE/usr/share/icons/hicolor/scalable/apps/musik-faktory.svg"
 install -Dm644 README.md "$STAGE/usr/share/doc/musik-faktory/README.md"
+install -Dm644 LICENSE "$STAGE/usr/share/doc/musik-faktory/copyright"
 
 install -d "$STAGE/usr/share/applications"
 cat > "$STAGE/usr/share/applications/musik-faktory.desktop" <<DESKTOP
