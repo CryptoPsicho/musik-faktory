@@ -18,13 +18,33 @@ HOST_ARCH="$(uname -m)"
 TARGET="${1:-${HOST_ARCH}-unknown-linux-musl}"
 TARGET_ARCH="${TARGET%%-*}"
 
-command -v dx >/dev/null || { echo "dx (Dioxus CLI) not found: cargo install dioxus-cli --version 0.7.9 --locked"; exit 1; }
+# The UI is built with the Dioxus CLI, which must match the Dioxus version
+# the app uses (0.7.x). Set DX=/path/to/dx to use a specific one.
+DX="${DX:-dx}"
+dx_help() {
+  echo "  cargo install dioxus-cli --version 0.7.9 --locked --force"
+  echo "  (or, faster: cargo binstall dioxus-cli@0.7.9)"
+  echo "Only deploying? No need to build at all: install the .deb from the GitHub"
+  echo "release, see “Deploy on a Linux server” in the README."
+}
+if ! command -v "$DX" >/dev/null; then
+  echo "The Dioxus CLI (dx) was not found. Install the version this project uses:"
+  dx_help
+  exit 1
+fi
+DX_VERSION="$("$DX" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -1 || true)"
+if [[ "$DX_VERSION" != 0.7.* ]]; then
+  echo "This project needs the Dioxus CLI 0.7.x (it uses Dioxus 0.7.9), but $DX is version ${DX_VERSION:-unknown}."
+  echo "Install the matching one:"
+  dx_help
+  exit 1
+fi
 rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown
 rustup target list --installed 2>/dev/null | grep -qx "$TARGET" || rustup target add "$TARGET"
 
 echo "==> Building the UI (Dioxus → WebAssembly)"
 rm -rf target/dx/musik-ui/release/web/public   # drop stale hashed bundles
-(cd crates/ui && dx build --platform web --release)
+(cd crates/ui && "$DX" build --web --release)
 rm -rf dist/public
 mkdir -p dist
 cp -r target/dx/musik-ui/release/web/public dist/public
