@@ -44,9 +44,11 @@ enum Cmd {
         /// How long a mock generation takes.
         #[arg(long, default_value_t = 3000)]
         mock_delay_ms: u64,
-        /// Extra host names the server answers to (e.g. "musicbox.local",
-        /// "*.ts.net"). IP addresses and localhost always work.
-        #[arg(long = "allowed-host", env = "MUSIK_ALLOWED_HOSTS", value_delimiter = ',')]
+        /// Extra host names the server answers to (e.g. "music.example.com",
+        /// "*.example.com"). IP addresses, localhost, this machine's own name
+        /// and its Tailscale MagicDNS names always work. Names in the
+        /// MUSIK_ALLOWED_HOSTS variable (comma-separated) are added too.
+        #[arg(long = "allowed-host", value_delimiter = ',')]
         allowed_hosts: Vec<String>,
     },
     /// Start the server in the background if needed and open the app in the browser.
@@ -137,6 +139,10 @@ async fn serve(bind: &str, port: u16, data_dir: PathBuf, mock: bool, mock_delay_
             anyhow::bail!("ELEVENLABS_API_KEY doesn't look like an API key (unexpected characters or length)");
         }
     }
+    // The variable adds to the flag (clap alone would ignore it when the flag is given).
+    if let Ok(extra) = std::env::var("MUSIK_ALLOWED_HOSTS") {
+        allowed_hosts.extend(extra.split(',').map(|h| h.trim().to_string()).filter(|h| !h.is_empty()));
+    }
     // This machine's own name works too ("musicbox", "musicbox.local").
     if let Ok(h) = std::fs::read_to_string("/etc/hostname") {
         let h = h.trim().to_string();
@@ -145,6 +151,17 @@ async fn serve(bind: &str, port: u16, data_dir: PathBuf, mock: bool, mock_delay_
             allowed_hosts.push(h);
         }
     }
+    let tailscale = api::detect_tailscale().await;
+    let mut known: Vec<String> = vec!["localhost".into()];
+    known.extend(allowed_hosts.iter().cloned());
+    let mut seen = std::collections::HashSet::new();
+    known.retain(|h| seen.insert(h.to_ascii_lowercase()));
+    tracing::info!("answering to: {} and any IP address", known.join(", "));
+    tracing::info!("Tailscale: {}", tailscale.describe());
+    let ts_names = match &tailscale {
+        api::Tailscale::Names(n) => n.clone(),
+        _ => Vec::new(),
+    };
     let state = Arc::new(api::AppState {
         db: Mutex::new(db),
         store,
@@ -154,7 +171,9 @@ async fn serve(bind: &str, port: u16, data_dir: PathBuf, mock: bool, mock_delay_
         login_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         recording: Default::default(),
         allowed_hosts,
+        tailscale_hosts: std::sync::Mutex::new(ts_names),
     });
+    api::spawn_tailscale_refresher(state.clone(), tailscale);
 
     let app = api::router(state.clone())
         .fallback(web::static_handler)
